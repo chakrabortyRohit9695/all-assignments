@@ -1,0 +1,6 @@
+{
+  "name": "kite-zerodha",
+  "version": "0.1.0",
+  "description": "Zerodha Kite Connect for Claude: portfolio, quotes, history and (opt-in) order placement via an MCP server.",
+  "keywords": ["zerodha", "kite", "trading", "india", "mcp"]
+}
