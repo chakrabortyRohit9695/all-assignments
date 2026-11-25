@@ -1,0 +1,6 @@
+{
+  "name": "mod-info",
+  "version": "0.1.0",
+  "description": "One-line task popup above the prompt: progress bar, steps, elapsed time and estimated cost. Toggle with /mod-info.",
+  "types": "./types/index.d.ts"
+}
