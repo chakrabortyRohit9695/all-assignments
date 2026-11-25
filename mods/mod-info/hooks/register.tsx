@@ -18,6 +18,13 @@ const clock = (ms: number) => {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
 }
 
+function summary(r: Run, nowMs: number): string {
+  const filled = Math.round((Math.min(r.steps, MAX_STEPS) / MAX_STEPS) * BAR_WIDTH)
+  const bar = '█'.repeat(filled) + '░'.repeat(BAR_WIDTH - filled)
+  const cost = Math.max(0, r.nowUsd - r.startUsd).toFixed(2)
+  return `${bar} ${r.steps} steps · ${clock((r.endedAt ?? nowMs) - r.startedAt)} · ~$${cost}`
+}
+
 async function total($: EngineInterface): Promise<number> {
   return (await $.session.usage()).cost?.usd ?? 0
 }
@@ -59,6 +66,13 @@ export const register: Register = on => {
     tick?.cancel()
     tick = $.clock.every(1000, () => {
       void update($, run, (r: Run | null) => (r?.isActive ? { ...r } : r))
+      // Fallback for surfaces that do not draw the band above the prompt.
+      void (async () => {
+        const r = await read($, run)
+        if (r?.isActive && (await read($, isOn))) {
+          $.ui.status(summary(r, await $.clock.now()))
+        }
+      })()
     })
 
     return next(e)
@@ -89,6 +103,7 @@ export const register: Register = on => {
     if (e.agentId === undefined) {
       tick?.cancel()
       tick = undefined
+      $.ui.status(undefined)
       const endedAt = await $.clock.now()
       const usd = await total($)
       await update($, run, (r: Run | null) =>
@@ -106,15 +121,11 @@ export const register: Register = on => {
     }
 
     const { Box, Text } = $.ui.resolve(e)
-    const filled = Math.round((Math.min(r.steps, MAX_STEPS) / MAX_STEPS) * BAR_WIDTH)
-    const bar = '█'.repeat(filled) + '░'.repeat(BAR_WIDTH - filled)
-    const elapsed = clock((r.endedAt ?? (await $.clock.now())) - r.startedAt)
-    const cost = Math.max(0, r.nowUsd - r.startUsd).toFixed(2)
 
     return (
       <Box>
         <Text dimColor>
-          {bar} {r.steps} steps · {elapsed} · ~${cost}
+          {summary(r, await $.clock.now())}
         </Text>
       </Box>
     )
