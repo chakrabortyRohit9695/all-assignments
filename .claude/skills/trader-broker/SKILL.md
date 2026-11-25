@@ -108,6 +108,23 @@ IBKR as well. Set `"broker": "ibkr"` in `trader/config.json`, and size with
 `--whole-shares` if IBKR wants share counts. Set its tools that draft orders
 to Needs approval too.
 
+## Setup C: Zerodha Kite (India, kite-zerodha plugin)
+
+Uses the `kite-zerodha-plugin` MCP server in this repo (`kite_place_order`). **Kite has no
+paper trading: every order is real money (INR).** Tickets for Kite always say LIVE ACCOUNT.
+
+1. Install the plugin and set `KITE_API_KEY`, `KITE_API_SECRET` in the environment (never in chat).
+   Log in with `kite_login_url` / `kite_generate_session` (token expires daily ~6am IST).
+2. The order tool refuses unless the user sets `KITE_ALLOW_TRADING=true` themselves. Never set it for them.
+3. In `trader/config.json`: `"broker": "kite"`, optional `"kite_exchange": "NSE"` (default) and
+   `"kite_product": "CNC"` (delivery, default; `MIS` intraday, `NRML` F&O).
+4. Orders must be whole shares with a `qty` (no dollar `notional`): size with `trader-budget --whole-shares`
+   and a prices file in rupees. Tickets for fractional or `notional` orders show NOT READY.
+   Order types map: market->MARKET, limit->LIMIT, stop->SL-M, stop_limit->SL.
+5. Same three gates as every broker. Call `kite_place_order` with exactly the JSON the ticket printed,
+   and keep `kite_place_order` on "Needs approval" (`"ask": ["mcp__kite__kite_place_order"]`,
+   never in `allow`). Same for `kite_cancel_order`.
+
 ## Steps, for each order
 
 1. `ticket.py show`. Only READY tickets go to the user. A ticket that is NOT

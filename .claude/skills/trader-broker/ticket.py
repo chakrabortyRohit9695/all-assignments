@@ -115,6 +115,45 @@ def tool_input(order):
     return out
 
 
+KITE_TYPES = {"market": "MARKET", "limit": "LIMIT", "stop": "SL-M", "stop_limit": "SL"}
+KITE_EXCHANGES = ("NSE", "BSE", "NFO", "BFO", "MCX", "CDS")
+KITE_PRODUCTS = ("CNC", "MIS", "NRML")
+
+
+def kite_input(order, cfg):
+    """Arguments for the Kite plugin's kite_place_order tool (kite-zerodha-plugin).
+    Kite takes whole-share quantities, an exchange and a product, not dollar
+    amounts. Raises TicketError when the order cannot be expressed exactly."""
+    if order.get("notional") is not None or order.get("qty") is None:
+        raise TicketError("Kite orders need a whole-share qty, not a dollar amount; "
+                          "re-size with trader-budget --whole-shares and prices")
+    try:
+        qty = float(order["qty"])
+    except (TypeError, ValueError):
+        raise TicketError("qty is not a number")
+    if qty != int(qty) or qty < 1:
+        raise TicketError("Kite needs a whole number of shares, got %s" % order["qty"])
+    typ = str(order.get("type", "market"))
+    if typ not in KITE_TYPES:
+        raise TicketError("order type %s has no Kite equivalent here" % typ)
+    exch = str(cfg.get("kite_exchange", "NSE")).upper()
+    prod = str(cfg.get("kite_product", "CNC")).upper()
+    if exch not in KITE_EXCHANGES or prod not in KITE_PRODUCTS:
+        raise TicketError("kite_exchange / kite_product in config are not valid Kite values")
+    out = {"exchange": exch, "tradingsymbol": str(order.get("symbol", "")).upper(),
+           "transaction_type": str(order.get("side", "")).upper(), "quantity": int(qty),
+           "order_type": KITE_TYPES[typ], "product": prod, "variety": "regular"}
+    if typ in ("limit", "stop_limit"):
+        out["price"] = float(order["limit_price"])
+    if typ in ("stop", "stop_limit"):
+        out["trigger_price"] = float(order["stop_price"])
+    return out
+
+
+def is_kite(cfg):
+    return str(cfg.get("broker", "alpaca")).lower() == "kite"
+
+
 def _money(v):
     f = float(v)
     s = "{:,.2f}".format(f)
@@ -232,15 +271,30 @@ def render(order, idx, total, cfg, risk, state, today):
     ready, label, rv = status_of(order, risk, state, today)
     broker = str(cfg.get("broker", "alpaca")).lower()
     paper = cfg.get("paper", True)
+    if broker == "kite":
+        paper = False  # Kite Connect has no paper trading: every order is real
     acct = "PAPER account" if paper else "LIVE ACCOUNT, REAL MONEY"
-    lines = ["ORDER %d of %d, %s, %s" % (idx, total, acct, "Interactive Brokers" if broker == "ibkr" else "Alpaca"),
-             "  " + plain(order)]
+    name = {"ibkr": "Interactive Brokers", "kite": "Zerodha Kite"}.get(broker, "Alpaca")
+    lines = ["ORDER %d of %d, %s, %s" % (idx, total, acct, name),
+             "  " + (plain(order).replace("$", "\u20b9") if broker == "kite" else plain(order))]
     if order.get("why"):
         lines.append("  why: " + order["why"])
     lines.append("  " + label)
     for w in (rv or {}).get("warnings", []):
         lines.append("  note: " + w)
-    if broker == "ibkr":
+    if broker == "kite":
+        try:
+            kin = kite_input(order, cfg)
+        except TicketError as e:
+            ready, label = False, "NOT READY: %s" % e
+            lines[-1] = "  " + label
+            kin = None
+        if kin:
+            lines.append("  Claude will call kite_place_order (kite-zerodha plugin) with exactly:")
+            for l in json.dumps(kin, indent=2).splitlines():
+                lines.append("    " + l)
+            lines.append("  Amounts are in rupees (INR). Kite has no paper mode; the order is real.")
+    elif broker == "ibkr":
         lines.append("  Claude drafts this with the Interactive Brokers connector. IBKR sends it to your")
         lines.append("  IBKR account, and it only goes to the market after you approve it there.")
     else:
@@ -258,8 +312,10 @@ def ticket_json(order, idx, cfg, risk, state, today):
     ready, label, rv = status_of(order, risk, state, today)
     return {"index": idx, "ready": ready, "status": label, "plain": plain(order),
             "fingerprint": fingerprint(order), "paper": bool(cfg.get("paper", True)),
-            "broker": cfg.get("broker", "alpaca"), "tool": "place_stock_order",
-            "tool_input": tool_input(order), "why": order.get("why", "")}
+            "broker": cfg.get("broker", "alpaca"),
+            "tool": "kite_place_order" if is_kite(cfg) else "place_stock_order",
+            "tool_input": kite_input(order, cfg) if is_kite(cfg) else tool_input(order),
+            "why": order.get("why", "")}
 
 
 # ---------------------------------------------------------------- fills -> lots
@@ -355,6 +411,7 @@ def cmd_approve(a):
     ready, label, rv = status_of(order, risk, state, today)
     if not ready:
         raise TicketError("order %d is not ready: %s" % (a.index, label))
+    kin = kite_input(order, cfg) if is_kite(cfg) else None  # raises if Kite cannot take it
     ok, why = parse_yes(a.reply, order, [o.get("symbol", "") for o in orders])
     if not ok:
         print("Not recorded: %s. Ask the user again with the ticket for order %d." % (why, a.index))
@@ -362,11 +419,16 @@ def cmd_approve(a):
     rec = {"at": now_iso(), "date": today, "index": a.index, "fingerprint": fingerprint(order),
            "symbol": str(order.get("symbol", "")).upper(), "side": order.get("side"),
            "plain": plain(order), "status": "approved", "reply": a.reply,
-           "paper": bool(cfg.get("paper", True)), "broker": cfg.get("broker", "alpaca")}
+           "paper": False if is_kite(cfg) else bool(cfg.get("paper", True)), "broker": cfg.get("broker", "alpaca")}
     state.setdefault("orders", []).append(rec)
     write_json(a.state, state)
     print("Recorded your yes for order %d: %s." % (a.index, plain(order)))
-    if str(cfg.get("broker", "alpaca")).lower() == "ibkr":
+    if kin:
+        print("Now call kite_place_order with exactly:")
+        print(json.dumps(kin, indent=2))
+        print("Claude's card shows Allow once / Deny. Then: ticket.py result --index %d --status "
+              "placed|denied|failed" % a.index)
+    elif str(cfg.get("broker", "alpaca")).lower() == "ibkr":
         print("Now draft it with the Interactive Brokers connector; approve it in your IBKR account.")
     else:
         print("Now call place_stock_order with exactly:")
