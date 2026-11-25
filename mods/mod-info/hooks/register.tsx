@@ -23,7 +23,7 @@ async function total($: EngineInterface): Promise<number> {
 }
 
 export const register: Register = on => {
-  let stopTick: (() => void) | undefined
+  let tick: { cancel: () => void } | undefined
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -56,8 +56,8 @@ export const register: Register = on => {
       endedAt: null,
     }))
     // Redraw once a second so the elapsed time ticks between steps.
-    stopTick?.()
-    stopTick = $.clock.every(1000, () => {
+    tick?.cancel()
+    tick = $.clock.every(1000, () => {
       void update($, run, (r: Run | null) => (r?.isActive ? { ...r } : r))
     })
 
@@ -87,8 +87,8 @@ export const register: Register = on => {
 
   on('turn.complete', async ($, e, next) => {
     if (e.agentId === undefined) {
-      stopTick?.()
-      stopTick = undefined
+      tick?.cancel()
+      tick = undefined
       const endedAt = await $.clock.now()
       const usd = await total($)
       await update($, run, (r: Run | null) =>
